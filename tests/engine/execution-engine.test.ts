@@ -27,6 +27,7 @@ import {
 
 // Mock the registry modules
 const mockAgentInstance = createMockAgentPlugin();
+const mockGetAgentInstance = mock(() => Promise.resolve(mockAgentInstance));
 const mockTrackerInstance: Partial<TrackerPlugin> = {
   sync: mock(() => Promise.resolve({ success: true, message: 'Synced', added: 0, updated: 0, removed: 0, syncedAt: new Date().toISOString() })),
   getTasks: mock(() => Promise.resolve([] as TrackerTask[])),
@@ -46,7 +47,7 @@ const mockUpdateSessionMaxIterations = mock(() => Promise.resolve());
 // Override module imports
 mock.module('../../src/plugins/agents/registry.js', () => ({
   getAgentRegistry: () => ({
-    getInstance: () => Promise.resolve(mockAgentInstance),
+    getInstance: mockGetAgentInstance,
   }),
 }));
 
@@ -106,6 +107,7 @@ describe('ExecutionEngine', () => {
   beforeEach(() => {
     // Reset all mocks
     mock.restore();
+    mockGetAgentInstance.mockImplementation(() => Promise.resolve(mockAgentInstance));
     events = [];
     config = createTestConfig();
   });
@@ -866,6 +868,61 @@ describe('ExecutionEngine', () => {
       await engine.refreshTasks();
 
       expect(events).toHaveLength(0);
+    });
+
+    test('routes a task to a configured agent before execution', async () => {
+      const defaultAgent = createMockAgentPlugin({
+        meta: { id: 'claude', name: 'Claude' },
+      });
+      const routedAgent = createMockAgentPlugin({
+        meta: { id: 'gemini', name: 'Gemini' },
+        executeResult: createSuccessfulExecution('done\n<promise>COMPLETE</promise>'),
+      });
+
+      mockGetAgentInstance.mockImplementation((agentConfig: unknown) => {
+        if ((agentConfig as { name?: string } | undefined)?.name === 'gemini-impl') {
+          return Promise.resolve(routedAgent);
+        }
+        return Promise.resolve(defaultAgent);
+      });
+
+      const task = createTrackerTask({
+        labels: ['implementation'],
+        metadata: { complexity: 'medium' },
+      });
+
+      config = createTestConfig({
+        maxIterations: 1,
+        availableAgents: [
+          { name: 'claude-fast', plugin: 'claude', options: {} },
+          { name: 'gemini-impl', plugin: 'gemini', options: {} },
+        ],
+        taskRouting: [
+          { tags: ['implementation'], complexity: 'medium', agent: 'gemini-impl' },
+        ],
+      });
+
+      (mockTrackerInstance.getTasks as ReturnType<typeof mock>).mockImplementation(() =>
+        Promise.resolve([task])
+      );
+      (mockTrackerInstance.getNextTask as ReturnType<typeof mock>)
+        .mockImplementationOnce(() => Promise.resolve(task))
+        .mockImplementation(() => Promise.resolve(undefined));
+      (mockTrackerInstance.isComplete as ReturnType<typeof mock>).mockImplementation(() =>
+        Promise.resolve(false)
+      );
+
+      engine = new ExecutionEngine(config);
+      await engine.initialize();
+      await engine.start();
+
+      expect(mockGetAgentInstance).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'claude', plugin: 'claude' })
+      );
+      expect(mockGetAgentInstance).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'gemini-impl', plugin: 'gemini' })
+      );
+      expect(engine.getActiveAgentInfo()?.plugin).toBe('gemini');
     });
 
     test('resetTasksToOpen resets tasks back to open status', async () => {

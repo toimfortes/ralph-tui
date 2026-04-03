@@ -371,6 +371,18 @@ describe('serializeConfig', () => {
     expect(toml).toContain('name');
     expect(toml).toContain('test');
   });
+
+  test('serializes task routing rules', () => {
+    const toml = serializeConfig({
+      taskRouting: [
+        { tags: ['implementation'], agent: 'gemini-impl' },
+        { complexity: 'hard', agent: 'claude' },
+      ],
+    });
+    expect(toml).toContain('[[taskRouting]]');
+    expect(toml).toContain('implementation');
+    expect(toml).toContain('complexity');
+  });
 });
 
 describe('saveProjectConfig', () => {

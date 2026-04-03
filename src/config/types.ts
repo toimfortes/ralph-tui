@@ -147,6 +147,26 @@ export interface ParallelConfig {
 }
 
 /**
+ * Task complexity hint used for agent routing.
+ */
+export type TaskRoutingComplexity = "simple" | "medium" | "hard";
+
+/**
+ * Declarative rule for selecting an agent per task.
+ * A rule may match task labels, task metadata.complexity, or both.
+ */
+export interface TaskRoutingRule {
+  /** Match when the task contains at least one of these labels */
+  tags?: string[];
+
+  /** Match when task metadata.complexity equals this value */
+  complexity?: TaskRoutingComplexity;
+
+  /** Agent config name or plugin id to route matching tasks to */
+  agent: string;
+}
+
+/**
  * Configuration for AI-powered conflict resolution during parallel execution.
  */
 export interface ConflictResolutionConfig {
@@ -252,6 +272,9 @@ export interface StoredConfig {
   /** Configured agent plugins */
   agents?: AgentPluginConfig[];
 
+  /** Per-task routing rules for selecting agents by labels/complexity */
+  taskRouting?: TaskRoutingRule[];
+
   /** Configured tracker plugins */
   trackers?: TrackerPluginConfig[];
 
@@ -350,6 +373,12 @@ export interface StoredConfig {
 export interface RalphConfig {
   /** Active agent configuration */
   agent: AgentPluginConfig;
+
+  /** Resolved configured agents available for task routing */
+  availableAgents?: AgentPluginConfig[];
+
+  /** Per-task routing rules */
+  taskRouting?: TaskRoutingRule[];
 
   /** Active tracker configuration */
   tracker: TrackerPluginConfig;

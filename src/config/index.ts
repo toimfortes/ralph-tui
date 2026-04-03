@@ -380,69 +380,8 @@ export function getDefaultAgentConfig(
   const registry = getAgentRegistry();
   const plugins = registry.getRegisteredPlugins();
 
-  // Helper to apply shorthand config fields to agent config
-  const applyAgentOptions = (config: AgentPluginConfig): AgentPluginConfig => {
-    let result = config;
-
-    // Apply agentOptions shorthand
-    if (storedConfig.agentOptions) {
-      result = {
-        ...result,
-        options: { ...result.options, ...storedConfig.agentOptions },
-      };
-    }
-
-    // Apply CLI --variant to agent options (for agents like OpenCode that support it)
-    if (options.variant) {
-      result = {
-        ...result,
-        options: { ...result.options, variant: options.variant },
-      };
-    }
-
-    // Apply fallbackAgents shorthand (only if not already set on agent config)
-    if (storedConfig.fallbackAgents && !result.fallbackAgents) {
-      result = {
-        ...result,
-        fallbackAgents: storedConfig.fallbackAgents,
-      };
-    }
-
-    // Apply rateLimitHandling shorthand (only if not already set on agent config)
-    if (storedConfig.rateLimitHandling && !result.rateLimitHandling) {
-      result = {
-        ...result,
-        rateLimitHandling: storedConfig.rateLimitHandling,
-      };
-    }
-
-    // Apply command shorthand (only if not already set on agent config)
-    // This allows users to specify a custom executable like 'ccr code' for Claude Code Router
-    if (storedConfig.command && !result.command) {
-      result = {
-        ...result,
-        command: storedConfig.command,
-      };
-    }
-
-    // Apply envExclude shorthand (only if not already set on agent config)
-    if (storedConfig.envExclude && !result.envExclude) {
-      result = {
-        ...result,
-        envExclude: storedConfig.envExclude,
-      };
-    }
-
-    // Apply envPassthrough shorthand (only if not already set on agent config)
-    if (storedConfig.envPassthrough && !result.envPassthrough) {
-      result = {
-        ...result,
-        envPassthrough: storedConfig.envPassthrough,
-      };
-    }
-
-    return result;
-  };
+  const applyAgentOptions = (config: AgentPluginConfig): AgentPluginConfig =>
+    applyStoredAgentShorthands(config, storedConfig, options);
 
   // Check CLI override first
   if (options.agent) {
@@ -507,6 +446,101 @@ export function getDefaultAgentConfig(
   }
 
   return undefined;
+}
+
+function applyStoredAgentShorthands(
+  config: AgentPluginConfig,
+  storedConfig: StoredConfig,
+  options: RuntimeOptions,
+): AgentPluginConfig {
+  let result = config;
+
+  if (storedConfig.agentOptions) {
+    result = {
+      ...result,
+      options: { ...result.options, ...storedConfig.agentOptions },
+    };
+  }
+
+  if (options.variant) {
+    result = {
+      ...result,
+      options: { ...result.options, variant: options.variant },
+    };
+  }
+
+  if (storedConfig.fallbackAgents && !result.fallbackAgents) {
+    result = {
+      ...result,
+      fallbackAgents: storedConfig.fallbackAgents,
+    };
+  }
+
+  if (storedConfig.rateLimitHandling && !result.rateLimitHandling) {
+    result = {
+      ...result,
+      rateLimitHandling: storedConfig.rateLimitHandling,
+    };
+  }
+
+  if (storedConfig.command && !result.command) {
+    result = {
+      ...result,
+      command: storedConfig.command,
+    };
+  }
+
+  if (storedConfig.envExclude && !result.envExclude) {
+    result = {
+      ...result,
+      envExclude: storedConfig.envExclude,
+    };
+  }
+
+  if (storedConfig.envPassthrough && !result.envPassthrough) {
+    result = {
+      ...result,
+      envPassthrough: storedConfig.envPassthrough,
+    };
+  }
+
+  return result;
+}
+
+function resolveAvailableAgents(
+  storedConfig: StoredConfig,
+  options: RuntimeOptions,
+  defaultAgent: AgentPluginConfig,
+): AgentPluginConfig[] {
+  const registry = getAgentRegistry();
+  const resolved = new Map<string, AgentPluginConfig>();
+
+  const add = (config: AgentPluginConfig): void => {
+    resolved.set(config.name, config);
+    if (!resolved.has(config.plugin)) {
+      resolved.set(config.plugin, config);
+    }
+  };
+
+  for (const configuredAgent of storedConfig.agents ?? []) {
+    add(applyStoredAgentShorthands(configuredAgent, storedConfig, options));
+  }
+
+  add(defaultAgent);
+  for (const plugin of registry.getRegisteredPlugins()) {
+    add(
+      applyStoredAgentShorthands(
+        {
+          name: plugin.id,
+          plugin: plugin.id,
+          options: {},
+        },
+        storedConfig,
+        options,
+      ),
+    );
+  }
+  return Array.from(new Set(resolved.values()));
 }
 
 /**
@@ -668,7 +702,9 @@ export async function buildConfig(
 
   return {
     agent: agentConfig,
+    availableAgents: resolveAvailableAgents(storedConfig, options, agentConfig),
     tracker: trackerConfig,
+    taskRouting: storedConfig.taskRouting,
     maxIterations:
       options.iterations ??
       storedConfig.maxIterations ??
@@ -799,6 +835,22 @@ export async function validateConfig(
     }
   }
 
+  if (config.taskRouting && config.taskRouting.length > 0) {
+    const knownAgents = new Set<string>();
+    for (const agent of config.availableAgents ?? [config.agent]) {
+      knownAgents.add(agent.name);
+      knownAgents.add(agent.plugin);
+    }
+
+    for (const rule of config.taskRouting) {
+      if (!knownAgents.has(rule.agent)) {
+        warnings.push(
+          `Task routing agent '${rule.agent}' does not match a configured agent name or plugin; matching tasks will fall back to the default agent`,
+        );
+      }
+    }
+  }
+
   // Validate iterations
   if (config.maxIterations < 0) {
     errors.push("Max iterations must be 0 or greater");
@@ -826,6 +878,8 @@ export type {
   NotificationSoundMode,
   ImageCleanupPolicy,
   ImageConfig,
+  TaskRoutingRule,
+  TaskRoutingComplexity,
 } from "./types.js";
 export {
   DEFAULT_CONFIG,
@@ -843,6 +897,8 @@ export {
   ErrorHandlingConfigSchema,
   SubagentDetailLevelSchema,
   NotificationSoundModeSchema,
+  TaskRoutingRuleSchema,
+  TaskRoutingComplexitySchema,
 } from "./schema.js";
 export type {
   ConfigParseResult,

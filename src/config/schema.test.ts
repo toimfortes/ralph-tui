@@ -14,6 +14,8 @@ import {
   NotificationsConfigSchema,
   ParallelModeSchema,
   ParallelConfigSchema,
+  TaskRoutingComplexitySchema,
+  TaskRoutingRuleSchema,
   AgentPluginConfigSchema,
   TrackerOptionsSchema,
   TrackerPluginConfigSchema,
@@ -220,6 +222,45 @@ describe('ParallelConfigSchema', () => {
   });
 });
 
+describe('TaskRoutingComplexitySchema', () => {
+  test('accepts valid values', () => {
+    expect(TaskRoutingComplexitySchema.parse('simple')).toBe('simple');
+    expect(TaskRoutingComplexitySchema.parse('medium')).toBe('medium');
+    expect(TaskRoutingComplexitySchema.parse('hard')).toBe('hard');
+  });
+
+  test('rejects invalid values', () => {
+    expect(() => TaskRoutingComplexitySchema.parse('urgent')).toThrow();
+  });
+});
+
+describe('TaskRoutingRuleSchema', () => {
+  test('accepts tag-based routing rules', () => {
+    const result = TaskRoutingRuleSchema.parse({
+      tags: ['implementation'],
+      agent: 'gemini-impl',
+    });
+    expect(result.tags).toEqual(['implementation']);
+    expect(result.agent).toBe('gemini-impl');
+  });
+
+  test('accepts complexity-only routing rules', () => {
+    const result = TaskRoutingRuleSchema.parse({
+      complexity: 'hard',
+      agent: 'claude',
+    });
+    expect(result.complexity).toBe('hard');
+  });
+
+  test('rejects rules without tags or complexity', () => {
+    expect(() =>
+      TaskRoutingRuleSchema.parse({
+        agent: 'claude',
+      })
+    ).toThrow();
+  });
+});
+
 describe('AgentPluginConfigSchema', () => {
   test('accepts valid minimal configuration', () => {
     const result = AgentPluginConfigSchema.parse({
@@ -419,10 +460,15 @@ describe('StoredConfigSchema', () => {
       skills_dir: './skills',
       subagentTracingDetail: 'moderate',
       notifications: { enabled: true, sound: 'ralph' },
+      taskRouting: [
+        { tags: ['implementation'], agent: 'gemini-impl' },
+        { complexity: 'hard', agent: 'claude' },
+      ],
     });
     expect(result.defaultAgent).toBe('claude');
     expect(result.maxIterations).toBe(20);
     expect(result.agents).toHaveLength(2);
+    expect(result.taskRouting).toHaveLength(2);
   });
 
   test('validates maxIterations bounds', () => {
@@ -536,6 +582,16 @@ describe('StoredConfigSchema', () => {
 
   test('validates parallel.mode values', () => {
     expect(() => StoredConfigSchema.parse({ parallel: { mode: 'invalid' } })).toThrow();
+  });
+
+  test('accepts taskRouting configuration', () => {
+    const result = StoredConfigSchema.parse({
+      taskRouting: [
+        { tags: ['review'], agent: 'codex' },
+        { complexity: 'medium', agent: 'gemini-impl' },
+      ],
+    });
+    expect(result.taskRouting).toHaveLength(2);
   });
 });
 

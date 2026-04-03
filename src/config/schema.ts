@@ -90,6 +90,22 @@ export const ParallelConfigSchema = z.object({
   targetBranch: z.string().min(1).optional(),
 });
 
+export const TaskRoutingComplexitySchema = z.enum(['simple', 'medium', 'hard']);
+
+export const TaskRoutingRuleSchema = z
+  .object({
+    tags: z.array(z.string().min(1)).optional(),
+    complexity: TaskRoutingComplexitySchema.optional(),
+    agent: z.string().min(1, 'Task routing agent is required'),
+  })
+  .refine(
+    (rule) => (rule.tags && rule.tags.length > 0) || rule.complexity !== undefined,
+    {
+      message: 'Task routing rule must define tags, complexity, or both',
+      path: ['tags'],
+    }
+  );
+
 /**
  * Conflict resolution configuration schema for parallel execution
  */
@@ -157,6 +173,7 @@ export const StoredConfigSchema = z
     // Plugin configurations
     agents: z.array(AgentPluginConfigSchema).optional(),
     trackers: z.array(TrackerPluginConfigSchema).optional(),
+    taskRouting: z.array(TaskRoutingRuleSchema).optional(),
 
     // Agent-specific options (shorthand for common settings)
     agent: z.string().optional(),

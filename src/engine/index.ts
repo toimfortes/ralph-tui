@@ -35,6 +35,7 @@ import { RateLimitDetector, type RateLimitDetectionResult } from './rate-limit-d
 import type { TrackerPlugin, TrackerTask } from '../plugins/trackers/types.js';
 import type {
   AgentPlugin,
+  AgentPluginConfig,
   AgentExecutionHandle,
   AgentExecutionResult,
 } from '../plugins/agents/types.js';
@@ -60,6 +61,7 @@ import { performAutoCommit } from './auto-commit.js';
 import type { AgentSwitchEntry } from '../logs/index.js';
 import { renderPrompt } from '../templates/index.js';
 import { appendWithCharLimit as appendWithSharedCharLimit } from '../utils/buffer-limits.js';
+import { TaskRouter } from './task-router.js';
 
 /**
  * Pattern to detect completion signal in agent output
@@ -224,6 +226,10 @@ export class ExecutionEngine {
   private config: RalphConfig;
   private agent: AgentPlugin | null = null;
   private tracker: TrackerPlugin | null = null;
+  private taskRouter: TaskRouter;
+  private taskPrimaryAgentConfig: AgentPluginConfig | null = null;
+  private activeAgentConfig: AgentPluginConfig | null = null;
+  private preparedTaskId: string | null = null;
   private listeners: EngineEventListener[] = [];
   private state: EngineState;
   private currentExecution: AgentExecutionHandle | null = null;
@@ -253,6 +259,11 @@ export class ExecutionEngine {
 
   constructor(config: RalphConfig) {
     this.config = config;
+    this.taskRouter = new TaskRouter(
+      config.agent,
+      config.availableAgents,
+      config.taskRouting,
+    );
     this.state = {
       status: 'idle',
       currentIteration: 0,
@@ -279,10 +290,81 @@ export class ExecutionEngine {
     this.rateLimitDetector = new RateLimitDetector();
 
     // Get rate limit handling config from agent config or use defaults
-    const agentRateLimitConfig = this.config.agent.rateLimitHandling;
-    this.rateLimitConfig = {
+    this.rateLimitConfig = this.resolveRateLimitConfig(this.config.agent);
+  }
+
+  private resolveRateLimitConfig(
+    agentConfig: RalphConfig['agent'],
+  ): Required<RateLimitHandlingConfig> {
+    return {
       ...DEFAULT_RATE_LIMIT_HANDLING,
-      ...agentRateLimitConfig,
+      ...agentConfig.rateLimitHandling,
+    };
+  }
+
+  private resolveNamedAgentConfig(
+    agentNameOrPlugin: string,
+    baseConfig: AgentPluginConfig,
+  ): AgentPluginConfig {
+    const configuredMatch = this.config.availableAgents?.find(
+      (agent) => agent.name === agentNameOrPlugin || agent.plugin === agentNameOrPlugin,
+    );
+    if (configuredMatch) {
+      return configuredMatch;
+    }
+
+    return {
+      ...baseConfig,
+      name: agentNameOrPlugin,
+      plugin: agentNameOrPlugin,
+    };
+  }
+
+  private async loadAgentInstance(agentConfig: AgentPluginConfig): Promise<AgentPlugin> {
+    const agentRegistry = getAgentRegistry();
+    const agentInstance = await agentRegistry.getInstance(agentConfig);
+
+    const detectResult = await agentInstance.detect();
+    if (!detectResult.available) {
+      throw new Error(
+        `Agent '${agentConfig.plugin}' not available: ${detectResult.error}`
+      );
+    }
+
+    if (this.config.model) {
+      const modelError = agentInstance.validateModel(this.config.model);
+      if (modelError) {
+        throw new Error(modelError);
+      }
+    }
+
+    return agentInstance;
+  }
+
+  private async prepareTaskAgent(task: TrackerTask): Promise<void> {
+    if (this.preparedTaskId === task.id && this.agent) {
+      return;
+    }
+
+    const selectedAgentConfig = this.taskRouter.select(task);
+    const agentInstance = await this.loadAgentInstance(selectedAgentConfig);
+
+    this.agent = agentInstance;
+    this.primaryAgentInstance = agentInstance;
+    this.taskPrimaryAgentConfig = selectedAgentConfig;
+    this.activeAgentConfig = selectedAgentConfig;
+    this.preparedTaskId = task.id;
+    this.rateLimitConfig = this.resolveRateLimitConfig(selectedAgentConfig);
+    this.rateLimitedAgents.clear();
+
+    const now = new Date().toISOString();
+    this.state.activeAgent = {
+      plugin: selectedAgentConfig.plugin,
+      reason: 'primary',
+      since: now,
+    };
+    this.state.rateLimitState = {
+      primaryAgent: selectedAgentConfig.plugin,
     };
   }
 
@@ -294,40 +376,54 @@ export class ExecutionEngine {
    *   the forced task, skipping tracker initialization and sync.
    */
   async initialize(workerMode?: WorkerModeOptions): Promise<void> {
-    // Get agent instance
-    const agentRegistry = getAgentRegistry();
-    this.agent = await agentRegistry.getInstance(this.config.agent);
+    const startupCandidates = [
+      this.config.agent,
+      ...(this.config.availableAgents ?? []),
+    ];
 
-    // Detect agent availability
-    const detectResult = await this.agent.detect();
-    if (!detectResult.available) {
-      throw new Error(
-        `Agent '${this.config.agent.plugin}' not available: ${detectResult.error}`
-      );
+    let initialized = false;
+    let lastError: Error | null = null;
+    const attempted = new Set<string>();
+
+    for (const candidate of startupCandidates) {
+      const key = `${candidate.name}:${candidate.plugin}`;
+      if (attempted.has(key)) {
+        continue;
+      }
+      attempted.add(key);
+
+      try {
+        this.agent = await this.loadAgentInstance(candidate);
+        this.activeAgentConfig = candidate;
+        initialized = true;
+        break;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (!this.config.taskRouting || this.config.taskRouting.length === 0) {
+          throw lastError;
+        }
+      }
     }
 
-    // Validate model if specified
-    if (this.config.model) {
-      const modelError = this.agent.validateModel(this.config.model);
-      if (modelError) {
-        throw new Error(modelError);
-      }
+    if (!initialized || !this.agent || !this.activeAgentConfig) {
+      throw lastError ?? new Error('No available startup agent');
     }
 
     // Store reference to primary agent for recovery attempts
     this.primaryAgentInstance = this.agent;
+    this.taskPrimaryAgentConfig = this.activeAgentConfig;
 
     // Initialize active agent state
     const now = new Date().toISOString();
     this.state.activeAgent = {
-      plugin: this.config.agent.plugin,
+      plugin: this.activeAgentConfig.plugin,
       reason: 'primary',
       since: now,
     };
 
     // Initialize rate limit state tracking the primary agent
     this.state.rateLimitState = {
-      primaryAgent: this.config.agent.plugin,
+      primaryAgent: this.activeAgentConfig.plugin,
     };
 
     if (workerMode) {
@@ -512,7 +608,7 @@ export class ExecutionEngine {
         type: 'engine:warning',
         timestamp: new Date().toISOString(),
         code: 'sandbox-network-conflict',
-        message: `Warning: Agent '${this.config.agent.plugin}' requires network access but --no-network is enabled. LLM API calls will fail.`,
+        message: `Warning: Agent '${this.state.activeAgent?.plugin ?? this.config.agent.plugin}' requires network access but --no-network is enabled. LLM API calls will fail.`,
       });
     }
 
@@ -951,6 +1047,8 @@ export class ExecutionEngine {
       task,
       iteration,
     });
+
+    await this.prepareTaskAgent(task);
 
     // Update task status to in_progress
     await this.tracker!.updateTaskStatus(task.id, 'in_progress');
@@ -2014,6 +2112,9 @@ export class ExecutionEngine {
         `[recovery] Primary agent '${primaryAgent}' recovered! Switching back from '${fallbackAgent}'`
       );
       this.agent = this.primaryAgentInstance;
+      if (this.taskPrimaryAgentConfig) {
+        this.activeAgentConfig = this.taskPrimaryAgentConfig;
+      }
       this.switchAgent(primaryAgent, 'primary');
 
       // Clear rate-limited agents tracking since we're back on primary
@@ -2075,7 +2176,7 @@ export class ExecutionEngine {
    * Returns undefined if no fallback agents are configured or all are rate-limited.
    */
   private getNextFallbackAgent(): string | undefined {
-    const fallbackAgents = this.config.agent.fallbackAgents;
+    const fallbackAgents = this.taskPrimaryAgentConfig?.fallbackAgents;
     if (!fallbackAgents || fallbackAgents.length === 0) {
       return undefined;
     }
@@ -2112,40 +2213,22 @@ export class ExecutionEngine {
     }
 
     try {
-      // Create agent config for fallback - inherit options from primary
-      const fallbackConfig = {
-        name: nextFallback,
-        plugin: nextFallback,
-        options: { ...this.config.agent.options },
-        command: this.config.agent.command,
-        defaultFlags: this.config.agent.defaultFlags,
-        timeout: this.config.agent.timeout,
-      };
+      const baseConfig = this.taskPrimaryAgentConfig ?? this.activeAgentConfig ?? this.config.agent;
+      const fallbackConfig = this.resolveNamedAgentConfig(nextFallback, baseConfig);
 
       // Get fallback agent instance from registry
-      const agentRegistry = getAgentRegistry();
-      const fallbackInstance = await agentRegistry.getInstance(fallbackConfig);
-
-      // Verify fallback agent is available
-      const detectResult = await fallbackInstance.detect();
-      if (!detectResult.available) {
-        // Fallback not available - mark as limited and try next
-        console.log(
-          `[fallback] Agent '${nextFallback}' not available: ${detectResult.error}`
-        );
-        this.rateLimitedAgents.add(nextFallback);
-        return this.tryFallbackAgent(task, iteration, startedAt);
-      }
+      const fallbackInstance = await this.loadAgentInstance(fallbackConfig);
 
       // Switch to fallback agent
       this.agent = fallbackInstance;
+      this.activeAgentConfig = fallbackConfig;
       this.switchToFallbackAgent(nextFallback);
 
       // Clear rate limit retry count for the task since we're switching agents
       this.clearRateLimitRetryCount(task.id);
 
       console.log(
-        `[fallback] Switched from '${this.config.agent.plugin}' to '${nextFallback}'`
+        `[fallback] Switched from '${baseConfig.plugin}' to '${nextFallback}'`
       );
 
       return { switched: true, allAgentsLimited: false };
