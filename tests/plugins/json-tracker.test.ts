@@ -29,6 +29,10 @@ describe('JsonTrackerPlugin', () => {
         priority: 1,
         passes: false,
         labels: ['test'],
+        metadata: {
+          complexity: 'medium',
+          targetAgent: 'gemini-impl',
+        },
       },
       {
         id: 'US-002',
@@ -152,6 +156,15 @@ describe('JsonTrackerPlugin', () => {
       const task = tasks[0];
 
       expect(task?.metadata?.acceptanceCriteria).toEqual(['Criterion 1', 'Criterion 2']);
+    });
+
+    test('preserves story metadata for downstream routing', async () => {
+      await plugin.initialize({ path: prdPath });
+      const tasks = await plugin.getTasks();
+      const task = tasks[0];
+
+      expect(task?.metadata?.complexity).toBe('medium');
+      expect(task?.metadata?.targetAgent).toBe('gemini-impl');
     });
 
     test('filters by status', async () => {

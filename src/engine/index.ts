@@ -302,6 +302,19 @@ export class ExecutionEngine {
     };
   }
 
+  private getCurrentAgentPlugin(): string {
+    return this.state.activeAgent?.plugin
+      ?? this.activeAgentConfig?.plugin
+      ?? this.config.agent.plugin;
+  }
+
+  private getConfiguredModelForAgent(agentConfig?: AgentPluginConfig | null): string | undefined {
+    const configuredModel = agentConfig?.options?.model;
+    return typeof configuredModel === 'string' && configuredModel.length > 0
+      ? configuredModel
+      : this.config.model;
+  }
+
   private resolveNamedAgentConfig(
     agentNameOrPlugin: string,
     baseConfig: AgentPluginConfig,
@@ -356,6 +369,7 @@ export class ExecutionEngine {
     this.preparedTaskId = task.id;
     this.rateLimitConfig = this.resolveRateLimitConfig(selectedAgentConfig);
     this.rateLimitedAgents.clear();
+    this.state.currentModel = this.getConfiguredModelForAgent(selectedAgentConfig);
 
     const now = new Date().toISOString();
     this.state.activeAgent = {
@@ -942,7 +956,7 @@ export class ExecutionEngine {
       stderr,
       stdout,
       exitCode,
-      agentId: this.config.agent.plugin,
+      agentId: this.getCurrentAgentPlugin(),
     });
   }
 
@@ -1481,6 +1495,7 @@ export class ExecutionEngine {
           ...this.config,
           model: this.state.currentModel ?? this.config.model,
         },
+        agentPlugin: this.getCurrentAgentPlugin(),
         sessionId: this.config.sessionId,
         subagentTrace,
         agentSwitches: this.currentIterationAgentSwitches.length > 0 ? [...this.currentIterationAgentSwitches] : undefined,
@@ -2115,6 +2130,7 @@ export class ExecutionEngine {
       if (this.taskPrimaryAgentConfig) {
         this.activeAgentConfig = this.taskPrimaryAgentConfig;
       }
+      this.state.currentModel = this.getConfiguredModelForAgent(this.taskPrimaryAgentConfig);
       this.switchAgent(primaryAgent, 'primary');
 
       // Clear rate-limited agents tracking since we're back on primary
@@ -2222,6 +2238,7 @@ export class ExecutionEngine {
       // Switch to fallback agent
       this.agent = fallbackInstance;
       this.activeAgentConfig = fallbackConfig;
+      this.state.currentModel = this.getConfiguredModelForAgent(fallbackConfig);
       this.switchToFallbackAgent(nextFallback);
 
       // Clear rate limit retry count for the task since we're switching agents

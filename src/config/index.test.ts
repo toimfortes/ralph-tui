@@ -171,6 +171,27 @@ describe('loadStoredConfig', () => {
     expect(config.agents![0].name).toBe('project-agent');
   });
 
+  test('replaces task routing rules from project config', async () => {
+    await writeTomlConfig(globalConfigPath, {
+      taskRouting: [
+        { tags: ['implementation'], agent: 'gemini' },
+      ],
+    });
+
+    const projectConfigDir = join(tempDir, '.ralph-tui');
+    await mkdir(projectConfigDir, { recursive: true });
+    await writeTomlConfig(join(projectConfigDir, 'config.toml'), {
+      taskRouting: [
+        { tags: ['review'], agent: 'codex' },
+      ],
+    });
+
+    const config = await loadStoredConfig(tempDir, globalConfigPath);
+    expect(config.taskRouting).toEqual([
+      { tags: ['review'], agent: 'codex' },
+    ]);
+  });
+
   test('merges errorHandling config', async () => {
     await writeTomlConfig(globalConfigPath, {
       errorHandling: { strategy: 'retry', maxRetries: 3 },

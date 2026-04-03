@@ -53,6 +53,9 @@ interface PrdUserStory {
 
   /** Optional notes for when the story was completed (alias for notes) */
   completionNotes?: string;
+
+  /** Optional task metadata used by advanced routing and prompts */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -285,6 +288,7 @@ function storyToTask(story: PrdUserStory, parentName?: string): TrackerTask {
     parentId: parentName,
     dependsOn: story.dependsOn,
     metadata: {
+      ...(story.metadata ?? {}),
       acceptanceCriteria: story.acceptanceCriteria,
       notes: notes,
       completionNotes: notes, // Keep for backward compat

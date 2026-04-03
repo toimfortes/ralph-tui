@@ -206,6 +206,7 @@ function createControllableTracker(options: {
 let ExecutionEngine: typeof import('../../src/engine/index.js').ExecutionEngine;
 let mockAgentRegistry: ReturnType<typeof createControllableAgent>;
 let mockTrackerRegistry: ReturnType<typeof createControllableTracker>;
+let mockGetAgentInstance: ReturnType<typeof mock>;
 
 describe('ExecutionEngine Integration', () => {
   let events: EngineEvent[];
@@ -220,11 +221,12 @@ describe('ExecutionEngine Integration', () => {
     // Reset mocks for each test
     mockAgentRegistry = createControllableAgent();
     mockTrackerRegistry = createControllableTracker();
+    mockGetAgentInstance = mock(() => Promise.resolve(mockAgentRegistry.agent));
     
     // Mock the modules
     mock.module('../../src/plugins/agents/registry.js', () => ({
       getAgentRegistry: () => ({
-        getInstance: () => Promise.resolve(mockAgentRegistry.agent),
+        getInstance: mockGetAgentInstance,
       }),
     }));
 
@@ -390,6 +392,65 @@ describe('ExecutionEngine Integration', () => {
 
       const completedIterations = events.filter(e => e.type === 'iteration:completed');
       expect(completedIterations.length).toBe(2);
+
+      await engine.dispose();
+    });
+
+    test('routes a tagged task to the configured agent and completes end-to-end', async () => {
+      const defaultAgent = createControllableAgent({
+        results: [createSuccessfulExecution('default agent should not run')],
+      });
+      const routedAgent = createControllableAgent({
+        results: [createSuccessfulExecution('<promise>COMPLETE</promise>')],
+      });
+
+      mockTrackerRegistry = createControllableTracker({
+        tasks: [
+          createTrackerTask({
+            id: 'task-route-001',
+            title: 'Routed Task',
+            labels: ['implementation'],
+            metadata: { complexity: 'medium' },
+          }),
+        ],
+        completesAfter: 1,
+      });
+
+      mockGetAgentInstance.mockImplementation((agentConfig: unknown) => {
+        const config = agentConfig as { name?: string; plugin?: string } | undefined;
+        if (config?.name === 'gemini-impl' || config?.plugin === 'gemini') {
+          return Promise.resolve(routedAgent.agent);
+        }
+        return Promise.resolve(defaultAgent.agent);
+      });
+
+      const engine = new ExecutionEngine({
+        cwd: tempDir,
+        maxIterations: 10,
+        iterationDelay: 0,
+        agent: { name: 'claude-fast', plugin: 'claude', options: {} },
+        availableAgents: [
+          { name: 'claude-fast', plugin: 'claude', options: {} },
+          { name: 'gemini-impl', plugin: 'gemini', options: {} },
+        ],
+        taskRouting: [
+          { tags: ['implementation'], complexity: 'medium', agent: 'gemini-impl' },
+        ],
+        tracker: { name: 'test', plugin: 'test', options: {} },
+        errorHandling: { strategy: 'skip', maxRetries: 3, retryDelayMs: 0, continueOnNonZeroExit: false },
+      } as any);
+
+      engine.on((event) => events.push(event));
+
+      await engine.initialize();
+      await engine.start();
+
+      expect(routedAgent.getCallCount()).toBe(1);
+      expect(defaultAgent.getCallCount()).toBe(0);
+
+      const completed = events.find(e => e.type === 'task:completed');
+      expect(completed).toBeDefined();
+      expect(engine.getActiveAgentInfo()?.plugin).toBe('gemini');
 
       await engine.dispose();
     });

@@ -565,6 +565,21 @@ describe('formatMetadataHeader', () => {
     expect(header).toContain('**Model**: claude-sonnet-4-20250514');
   });
 
+  test('prefers runtime active agent over default config agent', () => {
+    const metadata = buildMetadata(createTestIterationResult(), {
+      config: {
+        agent: { name: 'claude', plugin: 'claude', options: {} },
+        model: 'gemini-2.5-pro',
+      },
+      agentPlugin: 'gemini',
+    });
+    const header = formatMetadataHeader(metadata);
+
+    expect(header).toContain('**Agent**: gemini');
+    expect(header).not.toContain('**Agent**: claude');
+    expect(header).toContain('**Model**: gemini-2.5-pro');
+  });
+
   test('includes epicId when present', () => {
     const metadata = buildMetadata(createTestIterationResult(), {
       config: { epicId: 'epic-123' },

@@ -216,6 +216,7 @@ function mergeConfigs(
   // Replace arrays entirely if present in project config
   if (project.agents !== undefined) merged.agents = project.agents;
   if (project.trackers !== undefined) merged.trackers = project.trackers;
+  if (project.taskRouting !== undefined) merged.taskRouting = project.taskRouting;
 
   // Merge nested objects
   if (project.agentOptions !== undefined) {

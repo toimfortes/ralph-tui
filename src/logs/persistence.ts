@@ -173,6 +173,9 @@ export interface BuildMetadataOptions {
   /** Ralph config (for agent plugin, model, epicId) */
   config?: Partial<RalphConfig>;
 
+  /** Runtime-resolved agent plugin used for the iteration */
+  agentPlugin?: string;
+
   /** Agent switches that occurred during this iteration */
   agentSwitches?: AgentSwitchEntry[];
 
@@ -198,6 +201,7 @@ export function buildMetadata(
 ): IterationLogMetadata {
   // Handle both old signature (config only) and new signature (options object)
   let config: Partial<RalphConfig> | undefined;
+  let agentPlugin: string | undefined;
   let agentSwitches: AgentSwitchEntry[] | undefined;
   let completionSummary: string | undefined;
   let summary: IterationSummary | undefined;
@@ -207,6 +211,7 @@ export function buildMetadata(
   // Detect new options object format by checking for any of its unique keys
   const isOptionsObject = configOrOptions && (
     'config' in configOrOptions ||
+    'agentPlugin' in configOrOptions ||
     'agentSwitches' in configOrOptions ||
     'completionSummary' in configOrOptions ||
     'sandboxConfig' in configOrOptions ||
@@ -217,6 +222,7 @@ export function buildMetadata(
     // New options object
     const opts = configOrOptions as BuildMetadataOptions;
     config = opts.config;
+    agentPlugin = opts.agentPlugin;
     agentSwitches = opts.agentSwitches;
     completionSummary = opts.completionSummary;
     summary = opts.summary;
@@ -240,7 +246,7 @@ export function buildMetadata(
     durationMs: result.durationMs,
     usage: result.usage,
     error: result.error,
-    agentPlugin: config?.agent?.plugin,
+    agentPlugin: agentPlugin ?? config?.agent?.plugin,
     model: config?.model,
     epicId: config?.epicId,
     agentSwitches: agentSwitches && agentSwitches.length > 0 ? agentSwitches : undefined,
@@ -619,6 +625,9 @@ export interface SaveIterationLogOptions {
   /** Ralph config (for output directory, agent plugin, model, epicId) */
   config?: Partial<RalphConfig>;
 
+  /** Runtime-resolved agent plugin used for the iteration */
+  agentPlugin?: string;
+
   /** Session ID for unique log file naming */
   sessionId?: string;
 
@@ -672,6 +681,7 @@ export async function saveIterationLog(
   // Old signature: saveIterationLog(cwd, result, stdout, stderr, config)
   // New signature: saveIterationLog(cwd, result, stdout, stderr, options)
   let config: Partial<RalphConfig> | undefined;
+  let agentPlugin: string | undefined;
   let sessionId: string | undefined;
   let subagentTrace: SubagentTrace | undefined;
   let agentSwitches: AgentSwitchEntry[] | undefined;
@@ -685,6 +695,7 @@ export async function saveIterationLog(
   // Detect new options object format by checking for any of its unique keys
   const isOptionsObject = options && (
     'config' in options ||
+    'agentPlugin' in options ||
     'subagentTrace' in options ||
     'sandboxConfig' in options ||
     'resolvedSandboxMode' in options ||
@@ -697,6 +708,7 @@ export async function saveIterationLog(
     // New options object
     const saveOptions = options as SaveIterationLogOptions;
     config = saveOptions.config;
+    agentPlugin = saveOptions.agentPlugin;
     sessionId = saveOptions.sessionId;
     subagentTrace = saveOptions.subagentTrace;
     agentSwitches = saveOptions.agentSwitches;
@@ -716,6 +728,7 @@ export async function saveIterationLog(
 
   const metadata = buildMetadata(result, {
     config,
+    agentPlugin,
     agentSwitches,
     completionSummary,
     summary,
